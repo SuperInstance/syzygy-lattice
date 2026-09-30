@@ -29,7 +29,7 @@ threat model ([arXiv 2608.16032](https://arxiv.org/abs/2608.16032)).
 
 ```sh
 node demo.mjs          # render five scenes as ASCII + run CV + seal the ledger
-node --test test/lattice.pins.mjs   # 6 pins
+node --test test/lattice.pins.mjs   # 9 pins (T1–T6 codec/CV/ledger, T7–T9 click-ML)
 ```
 
 No dependencies. Node ≥ 18. Everything is seeded and integer-leaning; the
@@ -58,6 +58,7 @@ This repo uses the fleet's four marks (see Syzygy's `docs/diffuse-by-marks.md`):
 | `src/codec.mjs` — orientation-keyed lattice codec | HEWN | T2, T3 |
 | `src/cv.mjs` — components / orientation / segmentation on text | HEWN | T4 (part) |
 | `src/receipts.mjs` — vision ledger + decode path | HEWN | T5, T6 |
+| `src/clicklearn.mjs` — click-supervised micro-ML (video feed + hidden clicker + hypothesis space) | HEWN | T7, T8, T9 |
 
 ## Known gaps (written down next to the claims)
 
@@ -71,6 +72,10 @@ This repo uses the fleet's four marks (see Syzygy's `docs/diffuse-by-marks.md`):
   ("the tokenizer is not learnable" — same gap, admitted in both houses).
 - No WASM port yet; the JS is the reference. Same bytes everywhere is pinned
   at the lattice-hash level, not at the compiler level.
+- The click-ML learner only recovers rules in its declared hypothesis space;
+  that boundary is pinned (T8's outside-space clicker is rejected), not hidden.
+  Real video ingest: see the fleet's edge-ledger + scout-video-ingest notes —
+  ffmpeg absent (apt-installable), PIL bridge available, synth streams HEWN.
 
 ## License
 

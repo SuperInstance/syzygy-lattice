@@ -11,6 +11,7 @@ import { synthFrame, scenes, fnv1a64 } from "../src/synth.mjs";
 import { encodeFrame, renderGlyphs, RAMPS } from "../src/codec.mjs";
 import { components, orientationField, bandSegment } from "../src/cv.mjs";
 import { VisionLedger, decodeToLuma } from "../src/receipts.mjs";
+import { features, featureHash, makeClicker, frameStream, learn, tailAgreement, HYPOTHESIS_SPACE } from "../src/clicklearn.mjs";
 
 test("T1 synthesis is deterministic", () => {
   const a = synthFrame(scenes.diamond, 7), b = synthFrame(scenes.diamond, 7);
@@ -77,4 +78,43 @@ test("T6 decode: braille-only reconstruction of hbar keeps structure", () => {
   // row 8 is inside the bar: decoded luma there must exceed row 0 (outside)
   const inside = dec.y[8 * dec.w + 16], outside = dec.y[0 * dec.w + 16];
   assert.ok(inside > outside, `inside(${inside}) should exceed outside(${outside})`);
+});
+
+// --- click-supervised micro-ML (the captain's "video feeds and clicks" lane) ---
+
+test("T7 features() is deterministic and hash-stable", () => {
+  const f1 = features(encodeFrame(synthFrame(scenes.diamond, 7)));
+  const f2 = features(encodeFrame(synthFrame(scenes.diamond, 7)));
+  assert.deepEqual(f1, f2);
+  assert.equal(featureHash(f1), featureHash(f2));
+  assert.equal(f1.max_mass, 128); // census-pinned diamond mass, seed 7
+});
+
+test("T8 the learner recovers each in-space clicker rule, and nothing else", () => {
+  for (const rule of HYPOTHESIS_SPACE) {
+    const clicker = makeClicker(rule.name);
+    const stream = frameStream(101, 240);
+    const { ledger, predictions, accepted } = learn(stream, clicker);
+    assert.equal(accepted.length, 1, `rule ${rule.name}: exactly one hypothesis accepted, got ${accepted.length}`);
+    assert.equal(accepted[0].result.name, rule.name, `accepted hypothesis must BE the clicker's rule`);
+    const agree = tailAgreement(predictions, stream, clicker, 60);
+    assert.ok(agree >= 0.85, `rule ${rule.name}: tail agreement ${(agree * 100).toFixed(0)}% < 85%`);
+    assert.equal(ledger.verifyChain().ok, true);
+  }
+  // honest boundary: a clicker outside the declared space is never claimed
+  const oddClicker = { name: "ink-parity (OUTSIDE)", click: (f) => (f.total_ink & 1) === 0 };
+  const stream = frameStream(101, 120);
+  const { accepted } = learn(stream, oddClicker);
+  assert.equal(accepted.length, 0, "outside-space clicker: no hypothesis may be accepted");
+});
+
+test("T9 accepted HYPOTH receipts are sealed and tamper-evident", () => {
+  const clicker = makeClicker("wide-structure");
+  const stream = frameStream(55, 120);
+  const { ledger, accepted } = learn(stream, clicker);
+  assert.ok(accepted.length >= 1, "expected an accepted hypothesis");
+  assert.equal(ledger.verifyChain().ok, true);
+  // FARMA-flavored edit: "the accepted rule was already diag-or-heavy"
+  accepted[0].result.name = "diag-or-heavy";
+  assert.equal(ledger.verifyChain().ok, false, "edited HYPOTH receipt breaks the chain");
 });
