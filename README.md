@@ -29,7 +29,7 @@ threat model ([arXiv 2608.16032](https://arxiv.org/abs/2608.16032)).
 
 ```sh
 node demo.mjs          # render five scenes as ASCII + run CV + seal the ledger
-node --test test/lattice.pins.mjs   # 9 pins (T1–T6 codec/CV/ledger, T7–T9 click-ML)
+node --test test/lattice.pins.mjs   # 12 pins (T1–T6 codec/CV/ledger, T7–T9 click-ML)
 ```
 
 No dependencies. Node ≥ 18. Everything is seeded and integer-leaning; the

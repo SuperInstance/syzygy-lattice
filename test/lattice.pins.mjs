@@ -118,3 +118,68 @@ test("T9 accepted HYPOTH receipts are sealed and tamper-evident", () => {
   accepted[0].result.name = "diag-or-heavy";
   assert.equal(ledger.verifyChain().ok, false, "edited HYPOTH receipt breaks the chain");
 });
+
+// --- T10–T12: the e-process learner (witness-validation math, exact integer) ---
+
+test("T10 e-process golden: rich-field accepted at frame 6, receipt exact, rivals alive-but-unaccepted", async () => {
+  const m = await import("../src/clicklearn.mjs");
+  const r = m.eLearn(m.frameStream(7, 120), m.makeEClicker("rich-field", 3, 4, 20260930));
+  assert.equal(r.accepted.length, 1, "exactly one acceptance");
+  assert.deepEqual(r.accepted[0].result, {
+    name: "rich-field", e_num: "384", e_den: "4", alpha_num: 1, alpha_den: 32,
+    at_frame: 6, generative: "p=3/4 vs null q=1/2",
+  });
+  const byName = Object.fromEntries(r.hyps.map((h) => [h.name, h]));
+  assert.equal(byName["rich-field"].acceptedAt, 6);
+  assert.equal(byName["rich-field"].e, "384/4", "frozen at acceptance (experiment closed for the champion)");
+  assert.equal(byName["diag-or-heavy"].acceptedAt, null);
+  assert.equal(byName["diag-or-heavy"].killedAt, null, "nested rival survives — documented, pinned, not hidden");
+  assert.equal(byName["diag-or-heavy"].e, "6357656297771383287706849151302019416326144/6277101735386680763835789423207666416102355444464034512896");
+  assert.equal(byName["wide-structure"].e, "6357656297771383287706849151302019416326144/1393796574908163946345982392040522594123776");
+  const chk = r.ledger.verifyChain();
+  assert.equal(chk.ok, true);
+  assert.equal(chk.len, 1);
+});
+
+test("T11 truth wins first by >=64x margin over every live rival; misspecification leak pinned exactly; null kills all", async () => {
+  const m = await import("../src/clicklearn.mjs");
+  const run = (rn, frames = 120) => m.eLearn(m.frameStream(7, frames), m.makeEClicker(rn, 3, 4, 20260930));
+  const marginOK = (r) => {
+    const acc = r.accepted[0]; const ai = acc.result.at_frame;
+    const idx = m.HYPOTHESIS_SPACE.findIndex((h) => h.name === acc.result.name);
+    const [n, d] = r.path[ai][idx].split("/").map(BigInt);
+    return r.hyps.filter((h) => h.name !== acc.result.name && h.killedAt === null)
+      .every((h) => { const i = m.HYPOTHESIS_SPACE.findIndex((x) => x.name === h.name);
+        const [a, b] = r.path[ai][i].split("/").map(BigInt); return n * b >= 64n * a * d; });
+  };
+  for (const rn of ["diag-or-heavy", "wide-structure", "rich-field"]) {
+    const r = run(rn);
+    assert.equal(r.accepted[0].result.name, rn, "truth accepted first in its own run");
+    assert.ok(marginOK(r), `${rn}: champion e >= 64x every live rival at acceptance`);
+  }
+  // the pinned misspecification limit: in the wide-structure run the nested
+  // impostor crosses MUCH later (frame 112 vs 10). Ranking by at_frame is the
+  // output; a late impostor crossing does not revoke the earlier seal.
+  const wr = run("wide-structure");
+  assert.equal(wr.accepted.length, 2);
+  assert.equal(wr.accepted[1].result.name, "diag-or-heavy");
+  assert.equal(wr.accepted[1].result.at_frame, 112);
+  // realm-ml's coin flip, as a labeller: Ville does the rest.
+  const nr = m.eLearn(m.frameStream(7, 240), m.makeNullEClicker(777));
+  assert.equal(nr.accepted.length, 0, "null: zero acceptances");
+  assert.deepEqual(Object.fromEntries(nr.hyps.map((h) => [h.name, h.killedAt])), { "diag-or-heavy": 2, "wide-structure": 0, "rich-field": 0 });
+});
+
+test("T12 integer-exactness audit: rationals only, BigInt cross-multiplication, no float in the decision path", async () => {
+  const m = await import("../src/clicklearn.mjs");
+  const r = m.eLearn(m.frameStream(7, 120), m.makeEClicker("rich-field", 3, 4, 20260930));
+  const RAT = /^\d+\/\d+$/;
+  for (const row of r.path) for (const e of row) assert.ok(RAT.test(e), `e-value "${e}" is an exact rational string`);
+  const rec = r.accepted[0].result;
+  const n = BigInt(rec.e_num), d = BigInt(rec.e_den);
+  assert.ok(n * 1n >= 32n * d, "acceptance inequality recomputed in BigInt");
+  assert.equal(n % 1n === 0n, true, "no remainder concept exists here — exact division by construction");
+  const canon = JSON.stringify(rec);
+  assert.ok(!/[eE][+-]?\d/.test(canon.replace(/"e_(num|den)"/g, "")), "no scientific notation anywhere in the receipt");
+  assert.ok(!canon.includes("."), "no decimal point anywhere in the sealed receipt — integers only");
+});

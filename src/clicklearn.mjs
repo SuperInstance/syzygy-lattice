@@ -109,3 +109,82 @@ export function tailAgreement(predictions, stream, clicker, tail = 60) {
   }
   return counted ? agree / counted : 0;
 }
+
+// --- e-process learner (witness-validation math merged in) ---
+// witness-validation's DESIGN separates three questions; the learner's
+// "streak ≥ patience" rule answered none of them rigorously. This shard
+// answers the statistical one the DESIGN prescribes: an E-PROCESS / test
+// martingale. Generative model (pinned, seeded): the labeller clicks with
+// probability p=3/4 on frames where the true rule fires, never otherwise.
+// Null: a coin flip q=1/2 (realm-ml measured the fleet's judge at AUC 0.510
+// — a coin flip wearing an oracle's clothes; here the null IS the coin).
+// Per-frame likelihood ratio for hypothesis h = P(obs|h) / P(obs|null):
+//   h fires, click     -> (3/4)/(1/2) = 3/2
+//   h fires, no click  -> (1/4)/(1/2) = 1/2
+//   h silent, click    -> 0/(1/2)     = 0      (h claimed impossible => killed)
+//   h silent, no click -> 1/(1/2)     = 2
+// e-value = running product, kept EXACT as BigInt num/den — no float ever
+// crosses a decision. Accept at integer threshold num >= 32*den: Ville's
+// inequality gives P(sup E >= 1/alpha) <= alpha under the null, so false
+// acceptance is bounded by alpha = 1/32 per hypothesis (3/32 union over the
+// declared space). Wrong rules die: killed outright the first time the
+// labeller clicks where they stay silent, or ground down by 1/2 per lap on
+// frames they fire but the truth does not.
+
+// stochastic labeller: clicks w.p. pNum/pDen where the true rule fires.
+// sampling is INTEGER: rand % pDen < pNum — no floats in the decision path.
+export function makeEClicker(ruleName, pNum = 3, pDen = 4, seed = 20260930) {
+  const rule = HYPOTHESIS_SPACE.find((r) => r.name === ruleName);
+  if (!rule) throw new Error(`unknown rule: ${ruleName}`);
+  let s = seed >>> 0;
+  const rand = () => (s = (Math.imul(s, 1664525) + 1013904223) >>> 0, s);
+  return { name: rule.name, p: `${pNum}/${pDen}`, click: (f) => (rule.test(f) ? rand() % pDen < pNum : false) };
+}
+
+// the coin-flip null labeller realm-ml measured in the fleet's judge.
+export function makeNullEClicker(seed = 777) {
+  let s = seed >>> 0;
+  const rand = () => (s = (Math.imul(s, 1664525) + 1013904223) >>> 0, s);
+  return { name: "null-coin", click: () => rand() % 2 === 0 };
+}
+
+// Acceptance rule (pinned, honest): h is accepted when its e-value is both
+// >= 32 against the coin null AND >= 32x every OTHER live hypothesis's
+// e-value (pairwise, cross-multiplied — BigInt, no floats). The second
+// condition is what pins the observed misspecification leak: under the null
+// Ville bounds false acceptance at alpha=1/32, but against a NESTED rule
+// (impostor whose fire set covers the truth's) a bare threshold can let the
+// impostor cross later — the ratio test makes the truth win because every
+// impostor-only fire frame costs it 1/2 forever.
+export function eLearn(stream, clicker, { thresholdNum = 32, thresholdDen = 1, ledger = new VisionLedger() } = {}) {
+  const hyps = HYPOTHESIS_SPACE.map((r) => ({ name: r.name, test: r.test, num: 1n, den: 1n, killedAt: null, acceptedAt: null }));
+  const accepted = [];
+  const path = [];
+  const T = BigInt(thresholdNum), TD = BigInt(thresholdDen);
+  const PN = 3n, PD = 4n, QN = 1n, QD = 2n;
+  const beatsAll = (h) => hyps.every((o) => o === h || o.killedAt !== null ||
+    h.num * BigInt(o.den) * TD >= T * BigInt(o.num) * h.den);
+  for (const { frame, index } of stream) {
+    const f = features(encodeFrame(frame));
+    const click = clicker.click(f);
+    for (const h of hyps) {
+      if (h.killedAt !== null || h.acceptedAt !== null) continue;
+      const fires = h.test(f);
+      if (fires && click) { h.num *= PN * QD; h.den *= PD * QN; }        // (p)/(q) = 3/2
+      else if (fires && !click) { h.num *= (PD - PN) * QD; h.den *= PD * (QD - QN); } // 1/2
+      else if (!fires && click) { h.num = 0n; h.den = 1n; h.killedAt = index; }
+      else { h.num *= QD; h.den *= QN; }                                  // 2
+    }
+    path.push(hyps.map((h) => `${h.num}/${h.den}`));
+    for (const h of hyps) {
+      if (h.killedAt === null && h.acceptedAt === null && h.num * TD >= T * h.den && beatsAll(h)) {
+        h.acceptedAt = index;
+        accepted.push(ledger.seal("HYPOTH-E", `rule/${h.name}@eproc`, {
+          name: h.name, e_num: h.num.toString(), e_den: h.den.toString(),
+          alpha_num: 1, alpha_den: 32, at_frame: index, generative: "p=3/4 vs null q=1/2",
+        }));
+      }
+    }
+  }
+  return { ledger, accepted, hyps: hyps.map(({ name, num, den, killedAt, acceptedAt }) => ({ name, e: `${num}/${den}`, killedAt, acceptedAt })), path };
+}
